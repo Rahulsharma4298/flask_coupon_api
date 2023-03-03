@@ -9,4 +9,6 @@ class User(db.Model):
     last_name = Column(String)
     email = Column(String, unique=True)
     hashed_pwd = Column(String)
+    orders = db.relationship('Order', backref="user", lazy=True)
+
 
