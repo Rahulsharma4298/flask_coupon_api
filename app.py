@@ -1,15 +1,19 @@
 from flask import Flask, jsonify, request
 from database import db, DB_URI
+from models.cart_item import CartItem
+from models.order_item import OrderItem
 from models.user import User
 from models.coupon import Coupon
 from models.order import Order
+from models.cart import Cart
 from schemas import schema
 from werkzeug.security import generate_password_hash, check_password_hash
-from flask_jwt_extended import JWTManager, jwt_required, create_access_token
+from flask_jwt_extended import JWTManager, jwt_required, create_access_token, get_jwt_identity
 import uuid
 
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = DB_URI
+app.config['SQLALCHEMY_ECHO'] = True
 app.config['JWT_SECRET_KEY'] = str(uuid.uuid1())
 db.init_app(app)
 jwt = JWTManager(app)
@@ -32,7 +36,10 @@ def seed_db():
     user = User(first_name="trevor",
                 last_name="philips",
                 email="tp@example.com",
-                hashed_pwd="xyz")
+                hashed_pwd=generate_password_hash("xyz"))
+    cart = Cart()
+    db.session.add(cart)
+    user.cart = cart
     coupon1 = Coupon(name="Dominos",
                      available_quantity=10,
                      denomination=300,
@@ -45,11 +52,20 @@ def seed_db():
     db.session.add(coupon2)
     coupon_list = [coupon1, coupon2]
     total_price = sum([coupon.price for coupon in coupon_list])
+    cart = Cart.query.filter_by(user_id=user.cart.id).first()
+    for coupon_ in coupon_list:
+        cart_item = CartItem(quantity=2, coupon=coupon_)
+        cart.cart_items.append(cart_item)
+
     order = Order(order_total=total_price)
-    order.coupons.extend(coupon_list)
+
+    for coupon_ in coupon_list:
+        order_item = OrderItem(quantity=2, coupon=coupon_)
+        order.order_items.append(order_item)
+
     user.orders.append(order)
-    db.session.add(user)
     db.session.add(order)
+    db.session.add(user)
     db.session.commit()
     print("Database seeded")
 
@@ -105,6 +121,8 @@ def register_user():
                 last_name=last_name,
                 email=email,
                 hashed_pwd=generate_password_hash(password))
+    cart = Cart()
+    user.cart = cart
     db.session.add(user)
     db.session.commit()
     return jsonify({'msg': 'user added successfully', 'id': user.id}), 201
@@ -131,11 +149,76 @@ def get_users():
     return jsonify(schema.UserSchema(many=True).dump(users))
 
 
-@app.route('/orders', methods=['GET'])
-def get_orders():
-    orders = Order.query.all()
+@app.route('/user/orders', methods=['GET'])
+@jwt_required()
+def get_user_orders():
+    user_id = User.query.filter_by(email=get_jwt_identity()).first().id
+    orders = Order.query.filter_by(user_id=user_id)
     result = schema.OrderSchema(many=True).dump(orders)
     return jsonify(result)
+
+
+@app.route('/user/orders', methods=['POST'])
+@jwt_required()
+def place_order():
+    user = User.query.filter_by(email=get_jwt_identity()).first()
+    if not user:
+        return jsonify({"msg": "authentication error"}), 401
+    cart = Cart.query.filter_by(user_id=user.id).first()
+    order = Order()
+    total_price = 0
+    for cart_item in cart.cart_items:
+        total_price += (cart_item.coupon.price * cart_item.quantity)
+        order_item = OrderItem(quantity=cart_item.quantity, coupon=cart_item.coupon)
+        order.order_items.append(order_item)
+        cart_item.coupon.available_quantity = cart_item.coupon.available_quantity - cart_item.quantity
+    order.order_total = total_price
+    user.orders.append(order)
+    db.session.add(order)
+    cart.cart_items.clear()
+    db.session.commit()
+    return jsonify({"msg": "order placed successfully", "order_id": order.id})
+
+
+@app.route('/cart', methods=['GET'])
+@jwt_required()
+def get_user_cart():
+    email = get_jwt_identity()
+    if not email:
+        return jsonify({"msg": "authorization error"}), 401
+    user = User.query.filter_by(email=email).first()
+    if not user:
+        return jsonify({"msg": "authorization error"}), 401
+    cart_schema = schema.CartSchema()
+    return jsonify(cart_schema.dump(user.cart))
+
+
+@app.route('/cart', methods=['POST'])
+@jwt_required()
+def add_to_cart():
+    data = request.get_json()
+    user_email = get_jwt_identity()
+    coupon_data = data.get('coupon')
+    if not (user_email or coupon_data):
+        return jsonify({"msg": "missing required arguments"}), 400
+    user = User.query.filter_by(email=user_email).first()
+    if not user:
+        return jsonify({"msg": "user not found"}), 404
+    cart = user.cart
+    if not cart:
+        return jsonify({"msg": "user cart not found"}), 404
+    for item in coupon_data:
+        coupon_id = item.get('id')
+        quantity = item.get('quantity')
+        if not (coupon_id or quantity):
+            return jsonify({"msg": "missing required arguments"}), 400
+        coupon = Coupon.query.filter_by(id=coupon_id).first()
+        if not coupon:
+            return jsonify({"msg": "coupon not found"}), 404
+        cart_item = CartItem(coupon=coupon, quantity=quantity)
+        cart.cart_items.append(cart_item)
+    db.session.commit()
+    return jsonify(schema.CartSchema().dump(cart))
 
 
 if __name__ == '__main__':

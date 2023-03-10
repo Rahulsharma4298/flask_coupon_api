@@ -1,6 +1,9 @@
 from flask_marshmallow import Schema, Marshmallow
-from app import app
+import app
+from models.cart_item import CartItem
 from models.order import Order
+from models.cart import Cart
+from models.order_item import OrderItem
 
 ma = Marshmallow(app=app)
 
@@ -15,8 +18,33 @@ class CouponSchema(Schema):
         fields = ["id", "name", "available_quantity", "denomination", "price"]
 
 
+class OrderItemSchema(ma.SQLAlchemyAutoSchema):
+    coupon = ma.Nested(CouponSchema())
+
+    class Meta:
+        model = OrderItem
+
+
 class OrderSchema(ma.SQLAlchemyAutoSchema):
     user = ma.Nested(UserSchema)
-    coupons = ma.Nested(CouponSchema(many=True))
+    order_items = ma.Nested(OrderItemSchema(many=True))
+
     class Meta:
         model = Order
+
+
+class CartItemSchema(ma.SQLAlchemyAutoSchema):
+    coupon = ma.Nested(CouponSchema())
+
+    class Meta:
+        model = CartItem
+
+
+class CartSchema(ma.SQLAlchemyAutoSchema):
+    cart_items = ma.Nested(CartItemSchema(many=True))
+
+    class Meta:
+        model = Cart
+
+
+
